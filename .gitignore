@@ -1,0 +1,6 @@
+*.pth
+*.pyc
+/data/*
+/exp/*
+/checkpoints/*
+/comparison_results/*
