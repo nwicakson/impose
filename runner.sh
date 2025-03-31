@@ -15,28 +15,18 @@ traingt() {
 }
 
 trainimpose() {
-    CUDA_VISIBLE_DEVICES=2 python main_diffpose_frame.py \
-    --train --implicit_layers \
-    --config human36m_diffpose_uvxyz_gt.yml --batch_size 1024 \
-    --debug \
-    --doc ipose --exp exp --ni \
-    >exp/ipose.out 2>&1 & \
-    
+    CUDA_VISIBLE_DEVICES=0 python main_idiffpose_frame.py \
+    --train --config human36m_diffpose_uvxyz_deq.yml \
+    --batch_size 1024 \
+    --doc idiffpose3 --exp exp --ni \
+    >exp/idiffpose3.out 2>&1 &
 }
 
-trainipose2() {
-    CUDA_VISIBLE_DEVICES=2 python main_implicit_pose.py \
-    --config human36m_ipose.yml \
-    --doc ipose_dynamicmemory \
-    --use_implicit \
-    --use_dynamic_chunks \
-    --min_chunk_size 256 \
-    --max_chunk_size 1024 \
-    --target_memory_usage 0.9 \
-    --implicit_iters 20 \
-    --implicit_tol 1e-5 \
-    --min_iterations 10 \
-    --track_metrics
+trainimpose2() {
+    CUDA_VISIBLE_DEVICES=2 python main_idiffpose_frame.py \
+    --train --config human36m_diffpose_uvxyz_deq.yml \
+    --doc idiffpose5 \
+    --batch_size 1024
 }
 
 testcpn() {
@@ -65,11 +55,11 @@ case "$1" in
     traingt)
         traingt
         ;;
-    trainipose)
-        trainipose
+    trainimpose)
+        trainimpose
         ;;
-    trainipose2)
-        trainipose2
+    trainimpose2)
+        trainimpose2
         ;;
     testcpn)
         testcpn
@@ -78,7 +68,7 @@ case "$1" in
         testgt
         ;;
     *)
-        echo "Usage: $0 {traincpn|traingt|trainipose|trainipose2|testcpn|testgt}"
+        echo "Usage: $0 {traincpn|traingt|trainimpose|trainimpose2|testcpn|testgt}"
         exit 1
 esac
 exit 0
