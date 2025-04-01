@@ -36,7 +36,7 @@ training:
 testing:
     test_times: 1
     test_timesteps: 2
-    test_num_diffusion_timesteps: 12
+    test_num_diffusion_timesteps: 50
 
 optim:
     decay: 60

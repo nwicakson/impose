@@ -23,9 +23,9 @@ trainimpose() {
 }
 
 trainimpose2() {
-    CUDA_VISIBLE_DEVICES=2 python main_idiffpose_frame.py \
+    CUDA_VISIBLE_DEVICES=2 python main_diffpose_frame.py \
     --train --config human36m_diffpose_uvxyz_deq.yml \
-    --doc idiffpose5 \
+    --doc idiffpose9 \
     --batch_size 1024
 }
 

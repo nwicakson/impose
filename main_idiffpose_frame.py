@@ -69,18 +69,18 @@ def parse_args_and_config():
     parser.add_argument('--test_num_diffusion_timesteps', default=500, type=int, metavar='N',
                     help='the number of test times')
     
-    # DEQ configuration parameters
-    parser.add_argument('--deq_enabled', action='store_true',
+    # DEQ configuration parameters - overriding to always disable DEQ
+    parser.add_argument('--deq_enabled', action='store_false',
                       help='enable DEQ in the model')
-    parser.add_argument('--deq_middle_layer', action='store_true',
+    parser.add_argument('--deq_middle_layer', action='store_false',
                       help='enable DEQ for middle layer')
-    parser.add_argument('--deq_final_layer', action='store_true',
+    parser.add_argument('--deq_final_layer', action='store_false',
                       help='enable DEQ for final layer')
     parser.add_argument('--deq_iterations', default=1, type=int,
                       help='default number of DEQ iterations')
-    parser.add_argument('--deq_best_iterations', default=3, type=int,
+    parser.add_argument('--deq_best_iterations', default=1, type=int,
                       help='number of DEQ iterations for best epoch')
-    parser.add_argument('--best_epoch', action='store_true',
+    parser.add_argument('--best_epoch', action='store_false',
                       help='run evaluation with best epoch settings (more iterations)')
 
     args = parser.parse_args()
@@ -101,27 +101,20 @@ def parse_args_and_config():
     new_config.optim.lr_gamma = args.lr_gamma
     new_config.optim.decay = args.decay
 
-    # Override DEQ settings with command line arguments
+    # Override DEQ settings to disable
     if not hasattr(new_config, 'deq'):
         new_config.deq = argparse.Namespace()
     
-    if args.deq_enabled:
-        new_config.deq.enabled = True
+    # Force DEQ to be disabled
+    new_config.deq.enabled = False
     
     if not hasattr(new_config.deq, 'components'):
         new_config.deq.components = argparse.Namespace()
     
-    if args.deq_middle_layer:
-        new_config.deq.components.middle_layer = True
-    
-    if args.deq_final_layer:
-        new_config.deq.components.final_layer = True
-    
-    if args.deq_iterations != 1:
-        new_config.deq.default_iterations = args.deq_iterations
-    
-    if args.deq_best_iterations != 3:
-        new_config.deq.best_epoch_iterations = args.deq_best_iterations
+    new_config.deq.components.middle_layer = False
+    new_config.deq.components.final_layer = False
+    new_config.deq.default_iterations = 1
+    new_config.deq.best_epoch_iterations = 1
 
     if args.train:
         if os.path.exists(args.log_path):
@@ -203,20 +196,27 @@ def main():
     logging.info("Writing log file to {}".format(args.log_path))
     logging.info("Exp instance id = {}".format(os.getpid()))
     
+    # Log the test parameters being used
+    logging.info(f"Testing parameters: times={args.test_times}, steps={args.test_timesteps}, diffusion={args.test_num_diffusion_timesteps}")
+    logging.info(f"DEQ settings: enabled=False (forced)")
+    
     try:
+        # Create the runner
         runner = Diffpose(args, config)
+        
+        # Load models
         runner.create_diffusion_model(args.model_diff_path)
         runner.create_pose_model(args.model_pose_path)
+        
+        # Prepare data
         runner.prepare_data()
         
         if args.train:
             runner.train()
         else:
-            if args.best_epoch:
-                logging.info("Running evaluation with best epoch settings (increased DEQ iterations)")
-                _, _ = runner.test_hyber(is_best_epoch=True)
-            else:
-                _, _ = runner.test_hyber()
+            # Always use standard evaluation (no best_epoch special handling)
+            _, _ = runner.test_hyber(is_train=False, is_best_epoch=False)
+            
     except Exception:
         logging.error(traceback.format_exc())
 

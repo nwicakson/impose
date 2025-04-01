@@ -7,6 +7,7 @@ import numpy as np
 import scipy.sparse as sp
 import copy, math
 import torch.nn.functional as F
+import logging
 from torch.nn.parameter import Parameter
 from models.ChebConv import ChebConv, _GraphConv, _ResChebGC
 from models.GraFormer import *
@@ -68,9 +69,8 @@ class GCNdiff(nn.Module):
         self.hid_dim = self.hid_dim
         self.emd_dim = self.hid_dim*4
         
-        # Print model configuration for debugging
-        logging.info(f"GCNdiff Configuration: hid_dim={self.hid_dim}, emd_dim={self.emd_dim}, coords_dim={self.coords_dim}")
-        logging.info(f"GCNdiff Configuration: num_layers={num_layers}, n_head={n_head}, n_pts={n_pts}")
+        # Print model configuration (just once during initialization)
+        logging.info(f"GCNdiff Configuration: dims={self.hid_dim}/{self.emd_dim}, layers={num_layers}, heads={n_head}")
                 
         ### Generate Graphformer  ###
         self.n_layers = num_layers
@@ -101,9 +101,8 @@ class GCNdiff(nn.Module):
             if hasattr(config.deq, 'components'):
                 self.use_middle_layer_deq = self.use_middle_layer_deq and getattr(config.deq.components, 'middle_layer', False)
         
-        # Print DEQ settings
-        logging.info(f"GCNdiff DEQ Settings: enabled={getattr(config.deq, 'enabled', False) if hasattr(config, 'deq') else False}")
-        logging.info(f"GCNdiff DEQ Settings: use_middle_layer_deq={self.use_middle_layer_deq}")
+        # Log DEQ settings
+        logging.info(f"GCNdiff DEQ Settings: enabled={self.use_middle_layer_deq}")
         
         mid_idx = num_layers // 2
         
@@ -130,18 +129,8 @@ class GCNdiff(nn.Module):
             torch.nn.Linear(self.hid_dim, self.emd_dim),
             torch.nn.Linear(self.emd_dim, self.emd_dim),
         ])
-        
-        # Debug: Print model structure
-        logging.info("GCNdiff Model Structure:")
-        logging.info(f"  Input Layer: {type(self.gconv_input).__name__}")
-        logging.info(f"  Attention Layers: {len(self.atten_layers)} x {type(self.atten_layers[0]).__name__}")
-        logging.info(f"  GConv Layers: {len(self.gconv_layers)} x {type(self.gconv_layers[0]).__name__}")
-        logging.info(f"  Output Layer: {type(self.gconv_output).__name__}")
 
     def forward(self, x, mask, t, cemd):
-        # DEBUG: Print input statistics
-        logging.info(f"GCNdiff input - shape: {x.shape}, min: {x.min().item():.4f}, max: {x.max().item():.4f}, mean: {x.mean().item():.4f}")
-        
         # timestep embedding
         temb = get_timestep_embedding(t, self.hid_dim)
         temb = self.temb.dense[0](temb)
@@ -151,24 +140,13 @@ class GCNdiff(nn.Module):
         # Initial processing
         out = self.gconv_input(x, self.adj)
         
-        # DEBUG: Print after first layer
-        logging.info(f"GCNdiff after gconv_input - shape: {out.shape}, min: {out.min().item():.4f}, max: {out.max().item():.4f}, mean: {out.mean().item():.4f}")
-        
         # First half of the network - standard processing
         for i in range(self.n_layers // 2):
-            out_before = out.clone()
             out = self.atten_layers[i](out, mask)
             out = self.gconv_layers[i](out, temb)
-            
-            # DEBUG: Print stats for first layer
-            if i == 0:
-                logging.info(f"GCNdiff layer {i} - before shape: {out_before.shape}, after shape: {out.shape}")
-                logging.info(f"GCNdiff layer {i} - before: min={out_before.min().item():.4f}, max={out_before.max().item():.4f}, mean={out_before.mean().item():.4f}")
-                logging.info(f"GCNdiff layer {i} - after: min={out.min().item():.4f}, max={out.max().item():.4f}, mean={out.mean().item():.4f}")
         
         # Middle layer with DEQ if enabled, otherwise standard processing
         mid_idx = self.n_layers // 2
-        out_before_mid = out.clone()
         
         if self.use_middle_layer_deq and hasattr(self, 'deq_block'):
             logging.info("Using DEQ for middle layer")
@@ -184,35 +162,16 @@ class GCNdiff(nn.Module):
                 out = self.atten_layers[mid_idx](out, mask)
                 out = self.gconv_layers[mid_idx](out, temb)
         else:
-            logging.info("Using standard processing for middle layer")
             # Standard processing when DEQ is disabled (original behavior)
             out = self.atten_layers[mid_idx](out, mask)
             out = self.gconv_layers[mid_idx](out, temb)
         
-        # DEBUG: Print middle layer stats
-        logging.info(f"GCNdiff middle layer - before shape: {out_before_mid.shape}, after shape: {out.shape}")
-        logging.info(f"GCNdiff middle layer - before: min={out_before_mid.min().item():.4f}, max={out_before_mid.max().item():.4f}, mean={out_before_mid.mean().item():.4f}")
-        logging.info(f"GCNdiff middle layer - after: min={out.min().item():.4f}, max={out.max().item():.4f}, mean={out.mean().item():.4f}")
-        
         # Second half of the network - standard processing
         for i in range(self.n_layers // 2 + 1, self.n_layers):
-            out_before = out.clone()
             out = self.atten_layers[i](out, mask)
             out = self.gconv_layers[i](out, temb)
-            
-            # DEBUG: Print stats for last layer
-            if i == self.n_layers - 1:
-                logging.info(f"GCNdiff layer {i} - before shape: {out_before.shape}, after shape: {out.shape}")
-                logging.info(f"GCNdiff layer {i} - before: min={out_before.min().item():.4f}, max={out_before.max().item():.4f}, mean={out_before.mean().item():.4f}")
-                logging.info(f"GCNdiff layer {i} - after: min={out.min().item():.4f}, max={out.max().item():.4f}, mean={out.mean().item():.4f}")
         
         # Final output layer
-        out_before_final = out.clone()
         out = self.gconv_output(out, self.adj)
-        
-        # DEBUG: Print final output stats
-        logging.info(f"GCNdiff final output - before shape: {out_before_final.shape}, after shape: {out.shape}")
-        logging.info(f"GCNdiff final output - before: min={out_before_final.min().item():.4f}, max={out_before_final.max().item():.4f}, mean={out_before_final.mean().item():.4f}")
-        logging.info(f"GCNdiff final output - after: min={out.min().item():.4f}, max={out.max().item():.4f}, mean={out.mean().item():.4f}")
         
         return out

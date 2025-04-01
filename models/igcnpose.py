@@ -53,9 +53,8 @@ class GCNpose(nn.Module):
         self.hid_dim = self.hid_dim
         self.emd_dim = self.hid_dim*4
         
-        # Print model configuration for debugging
-        logging.info(f"GCNpose Configuration: hid_dim={self.hid_dim}, emd_dim={self.emd_dim}, coords_dim={self.coords_dim}")
-        logging.info(f"GCNpose Configuration: num_layers={num_layers}, n_head={n_head}, n_pts={n_pts}")
+        # Print model configuration (just once during initialization)
+        logging.info(f"GCNpose Configuration: dims={self.hid_dim}/{self.emd_dim}, layers={num_layers}, heads={n_head}")
                 
         ### Generate Graphformer  ###
         self.n_layers = num_layers
@@ -85,8 +84,7 @@ class GCNpose(nn.Module):
             if hasattr(config.deq, 'components'):
                 self.use_deq_refinement = self.use_deq_refinement and getattr(config.deq.components, 'final_layer', False)
         
-        # Print DEQ settings
-        logging.info(f"GCNpose DEQ Settings: enabled={getattr(config.deq, 'enabled', False) if hasattr(config, 'deq') else False}")
+        # Log DEQ settings
         logging.info(f"GCNpose DEQ Settings: use_deq_refinement={self.use_deq_refinement}")
         
         # Flag for best epoch
@@ -107,39 +105,17 @@ class GCNpose(nn.Module):
         self.gconv_layers = nn.ModuleList(_gconv_layers)
         self.atten_layers = nn.ModuleList(_attention_layer)
         self.gconv_output = ChebConv(in_c=dim_model, out_c=3, K=2)
-        
-        # Debug: Print model structure
-        logging.info("GCNpose Model Structure:")
-        logging.info(f"  Input Layer: {type(self.gconv_input).__name__}")
-        logging.info(f"  Attention Layers: {len(self.atten_layers)} x {type(self.atten_layers[0]).__name__}")
-        logging.info(f"  GConv Layers: {len(self.gconv_layers)} x {type(self.gconv_layers[0]).__name__}")
-        logging.info(f"  Output Layer: {type(self.gconv_output).__name__}")
 
     def forward(self, x, mask):
-        # DEBUG: Print input statistics
-        logging.info(f"GCNpose input - shape: {x.shape}, min: {x.min().item():.4f}, max: {x.max().item():.4f}, mean: {x.mean().item():.4f}")
-        
         # Initial processing
         out = self.gconv_input(x, self.adj)
         
-        # DEBUG: Print after first layer
-        logging.info(f"GCNpose after gconv_input - shape: {out.shape}, min: {out.min().item():.4f}, max: {out.max().item():.4f}, mean: {out.mean().item():.4f}")
-        
         # Process through all but the last layer normally
         for i in range(self.n_layers - 1):
-            out_before = out.clone()
             out = self.atten_layers[i](out, mask)
             out = self.gconv_layers[i](out)
-            
-            # DEBUG: Print stats for first layer
-            if i == 0:
-                logging.info(f"GCNpose layer {i} - before shape: {out_before.shape}, after shape: {out.shape}")
-                logging.info(f"GCNpose layer {i} - before: min={out_before.min().item():.4f}, max={out_before.max().item():.4f}, mean={out_before.mean().item():.4f}")
-                logging.info(f"GCNpose layer {i} - after: min={out.min().item():.4f}, max={out.max().item():.4f}, mean={out.mean().item():.4f}")
         
         # For the last layer, we can use DEQ refinement when needed
-        out_before_last = out.clone()
-        
         if self.use_deq_refinement and hasattr(self, 'is_best_epoch') and self.is_best_epoch:
             logging.info("Using DEQ for final layer refinement")
             try:
@@ -154,23 +130,11 @@ class GCNpose(nn.Module):
                 out = self.atten_layers[-1](out, mask)
                 out = self.gconv_layers[-1](out)
         else:
-            logging.info("Using standard processing for final layer")
             # Standard processing for last layer (original behavior)
             out = self.atten_layers[-1](out, mask)
             out = self.gconv_layers[-1](out)
-        
-        # DEBUG: Print last layer stats
-        logging.info(f"GCNpose last layer - before shape: {out_before_last.shape}, after shape: {out.shape}")
-        logging.info(f"GCNpose last layer - before: min={out_before_last.min().item():.4f}, max={out_before_last.max().item():.4f}, mean={out_before_last.mean().item():.4f}")
-        logging.info(f"GCNpose last layer - after: min={out.min().item():.4f}, max={out.max().item():.4f}, mean={out.mean().item():.4f}")
             
         # Final output layer
-        out_before_final = out.clone()
         out = self.gconv_output(out, self.adj)
-        
-        # DEBUG: Print final output stats
-        logging.info(f"GCNpose final output - before shape: {out_before_final.shape}, after shape: {out.shape}")
-        logging.info(f"GCNpose final output - before: min={out_before_final.min().item():.4f}, max={out_before_final.max().item():.4f}, mean={out_before_final.mean().item():.4f}")
-        logging.info(f"GCNpose final output - after: min={out.min().item():.4f}, max={out.max().item():.4f}, mean={out.mean().item():.4f}")
         
         return out
