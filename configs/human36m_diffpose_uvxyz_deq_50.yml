@@ -50,9 +50,9 @@ optim:
 # DEQ-specific configuration
 deq:
     # General DEQ settings
-    enabled: false
+    enabled: true
     default_iterations: 1
-    best_epoch_iterations: 15
+    best_epoch_iterations: 50   #standard = 15
     warm_up_epochs: 20
     min_epoch_for_increase: 10
     tolerance: 0.0001
@@ -88,5 +88,5 @@ deq:
     # Advanced settings
     advanced:
         convergence_metric: "relative"  # "relative" or "absolute"
-        anderson_acceleration: false
+        anderson_acceleration: true
         damping_factor: 1.0

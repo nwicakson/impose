@@ -96,9 +96,9 @@ class Diffpose(object):
                 if hasattr(config.deq, key):
                     self.deq_schedule[key] = getattr(config.deq, key)
         
-        # IMPORTANT: Force DEQ to be disabled for baseline comparison
-        self.deq_schedule['enabled'] = False
-        logging.info("DEQ forcibly disabled for baseline comparison")
+        if hasattr(config, 'deq'):
+            self.deq_schedule['enabled'] = config.deq.enabled
+            logging.info(f"DEQ enabled status from config: {self.deq_schedule['enabled']}")
 
     # prepare 2D and 3D skeleton for model training and testing 
     def prepare_data(self):
@@ -135,11 +135,19 @@ class Diffpose(object):
         logging.info(f"Train subjects: {self.subjects_train}")
         logging.info(f"Test subjects: {self.subjects_test}")
 
-    # Set DEQ iterations based on the context
     def _set_deq_iterations(self, is_best_epoch=False, is_training=True):
-        # IMPORTANT: Force DEQ to always be disabled
-        logging.info("DEQ is disabled, using standard processing")
-        return  # DEQ is disabled
+        # Check the actual schedule setting
+        if self.deq_schedule['enabled']:
+            iterations = self.deq_schedule['best_epoch_iterations'] if is_best_epoch else self.deq_schedule['default_iterations']
+            logging.info(f"DEQ is enabled with {iterations} iterations" + (" (best epoch)" if is_best_epoch else ""))
+            
+            # Actually configure any DEQ components here (model-specific)
+            # For example, if your model has DEQ components:
+            if hasattr(self.model_diff, 'module') and hasattr(self.model_diff.module, 'deq_manager'):
+                for component in self.model_diff.module.deq_manager.components:
+                    component.iterations = iterations
+        else:
+            logging.info("DEQ is disabled, using standard processing")
 
     # create diffusion model
     def create_diffusion_model(self, model_path = None):
@@ -211,14 +219,12 @@ class Diffpose(object):
 
         # initialize the recorded best performance
         best_p1, best_epoch = 1000, 0
-        # skip rate when sample skeletons from video
-        stride = self.args.downsample
         
         # create dataloader
         if config.data.dataset == "human36m":
             logging.info("Creating training data loader...")
             poses_train, poses_train_2d, actions_train, camerapara_train\
-                = fetch_me(self.subjects_train, self.dataset, self.keypoints_train, self.action_filter, stride)
+                = fetch_me(self.subjects_train, self.dataset, self.keypoints_train, self.action_filter, stride=1)
             
             logging.info(f"Training data: {len(poses_train)} sets, {len(poses_train_2d)} 2D sets")
             
@@ -380,16 +386,15 @@ class Diffpose(object):
         args, config, src_mask = self.args, self.config, self.src_mask
         
         # IMPORTANT: Force these to match original diffpose exactly
-        test_times = 1
-        test_timesteps = 2
-        test_num_diffusion_timesteps = 12
-        stride = args.downsample
+        test_times = args.test_times
+        test_timesteps = args.test_timesteps
+        test_num_diffusion_timesteps = args.test_num_diffusion_timesteps
         
         logging.info(f"Using fixed test parameters: times={test_times}, steps={test_timesteps}, diffusion_timesteps={test_num_diffusion_timesteps}")
                 
         if config.data.dataset == "human36m":
             poses_valid, poses_valid_2d, actions_valid, camerapara_valid = \
-                fetch_me(self.subjects_test, self.dataset, self.keypoints_test, self.action_filter, stride)
+                fetch_me(self.subjects_test, self.dataset, self.keypoints_test, self.action_filter, stride=1)
                 
             # Print validation data shape just once
             logging.info(f"Validation data: {len(poses_valid)} samples")
@@ -412,7 +417,7 @@ class Diffpose(object):
         self.model_pose.eval()
         
         # This is a no-op with DEQ disabled
-        self._set_deq_iterations(is_best_epoch=False, is_training=False)
+        self._set_deq_iterations(is_best_epoch=is_best_epoch, is_training=False)
         
         # Generate diffusion sequence using fixed parameters to match original
         if args.skip_type == "uniform":

@@ -10,9 +10,7 @@ import numpy as np
 
 from runners.diffpose_frame import Diffpose
 
-
 torch.set_printoptions(sci_mode=False)
-
 
 def parse_args_and_config():
     parser = argparse.ArgumentParser(description=globals()["__doc__"])
@@ -61,7 +59,7 @@ def parse_args_and_config():
                         help='learning rate')
     parser.add_argument('--decay', default=60, type=int, metavar='N',
                         help='decay frequency(epoch)')
-    #test hyperparameter
+    #test hyperparameter - will be overridden by config
     parser.add_argument('--test_times', default=5, type=int, metavar='N',
                     help='the number of test times')
     parser.add_argument('--test_timesteps', default=50, type=int, metavar='N',
@@ -81,11 +79,25 @@ def parse_args_and_config():
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     logging.info("Using device: {}".format(device))
     new_config.device = device
+    
     # update configure file
     new_config.training.batch_size = args.batch_size
     new_config.optim.lr = args.lr
     new_config.optim.lr_gamma = args.lr_gamma
     new_config.optim.decay = args.decay
+    
+    # Only override test parameters if explicitly provided
+    if args.test_times is not None:
+        new_config.testing.test_times = args.test_times
+    if args.test_timesteps is not None:
+        new_config.testing.test_timesteps = args.test_timesteps  
+    if args.test_num_diffusion_timesteps is not None:
+        new_config.testing.test_num_diffusion_timesteps = args.test_num_diffusion_timesteps
+        
+    # Log diffusion config
+    logging.info(f"Diffusion config - beta_schedule: {new_config.diffusion.beta_schedule}, start: {new_config.diffusion.beta_start}, end: {new_config.diffusion.beta_end}")
+    logging.info(f"Diffusion timesteps: {new_config.diffusion.num_diffusion_timesteps}")
+    logging.info(f"Testing parameters: times={new_config.testing.test_times}, timesteps={new_config.testing.test_timesteps}, diffusion_timesteps={new_config.testing.test_num_diffusion_timesteps}")
 
     if args.train:
         if os.path.exists(args.log_path):
@@ -168,9 +180,13 @@ def main():
     logging.info("Exp instance id = {}".format(os.getpid()))
     
     try:
+        logging.info("Creating diffusion model with GCNdiff...")
         runner = Diffpose(args, config)
         runner.create_diffusion_model(args.model_diff_path)
+        
+        logging.info("Creating GCNpose model...")
         runner.create_pose_model(args.model_pose_path)
+        
         runner.prepare_data()
         if args.train:
             runner.train()

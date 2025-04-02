@@ -43,8 +43,6 @@ def parse_args_and_config():
     parser.add_argument('--dim_model', type=int, default=96, help='dim model')
     parser.add_argument('--n_layer', type=int, default=5, help='num layer')
     parser.add_argument('--dropout', default=0.25, type=float, help='dropout rate')
-    parser.add_argument('--downsample', default=1, type=int, metavar='FACTOR',
-                        help='downsample frame rate by factor')
     # load pretrained model
     parser.add_argument('--model_diff_path', default=None, type=str,
                         help='the path of pretrain model')
@@ -70,12 +68,12 @@ def parse_args_and_config():
                     help='the number of test times')
     
     # DEQ configuration parameters - overriding to always disable DEQ
-    parser.add_argument('--deq_enabled', action='store_false',
-                      help='enable DEQ in the model')
-    parser.add_argument('--deq_middle_layer', action='store_false',
-                      help='enable DEQ for middle layer')
-    parser.add_argument('--deq_final_layer', action='store_false',
-                      help='enable DEQ for final layer')
+    parser.add_argument('--deq_enabled', action='store_true',
+                  help='enable DEQ in the model')
+    parser.add_argument('--deq_middle_layer', action='store_true',
+                    help='enable DEQ for middle layer')
+    parser.add_argument('--deq_final_layer', action='store_true',
+                    help='enable DEQ for final layer')
     parser.add_argument('--deq_iterations', default=1, type=int,
                       help='default number of DEQ iterations')
     parser.add_argument('--deq_best_iterations', default=1, type=int,
@@ -105,14 +103,14 @@ def parse_args_and_config():
     if not hasattr(new_config, 'deq'):
         new_config.deq = argparse.Namespace()
     
-    # Force DEQ to be disabled
-    new_config.deq.enabled = False
-    
+    # Use argument values for DEQ settings
+    new_config.deq.enabled = args.deq_enabled
+
     if not hasattr(new_config.deq, 'components'):
         new_config.deq.components = argparse.Namespace()
-    
-    new_config.deq.components.middle_layer = False
-    new_config.deq.components.final_layer = False
+
+    new_config.deq.components.middle_layer = args.deq_middle_layer and args.deq_enabled
+    new_config.deq.components.final_layer = args.deq_final_layer and args.deq_enabled
     new_config.deq.default_iterations = 1
     new_config.deq.best_epoch_iterations = 1
 

@@ -48,27 +48,38 @@ class Diffpose(object):
         )
         betas = self.betas = torch.from_numpy(betas).float().to(self.device)
         self.num_timesteps = betas.shape[0]
+        
+        # Log diffusion configuration
+        logging.info(f"Diffusion config - beta_schedule: {config.diffusion.beta_schedule}, start: {config.diffusion.beta_start}, end: {config.diffusion.beta_end}")
+        logging.info(f"Diffusion timesteps: {self.num_timesteps}")
 
     # prepare 2D and 3D skeleton for model training and testing 
     def prepare_data(self):
         args, config = self.args, self.config
-        print('==> Using settings {}'.format(args))
-        print('==> Using configures {}'.format(config))
+        logging.info('==> Using settings {}'.format(args))
         
         # load dataset
         if config.data.dataset == "human36m":
+            logging.info('==> Loading Human3.6M dataset')
             from common.h36m_dataset import Human36mDataset, TRAIN_SUBJECTS, TEST_SUBJECTS
             dataset = Human36mDataset(config.data.dataset_path)
+            logging.info('==> Dataset loaded, processing subjects')
+            
             self.subjects_train = TRAIN_SUBJECTS
             self.subjects_test = TEST_SUBJECTS
+            logging.info('==> Reading 3D data')
             self.dataset = read_3d_data_me(dataset)
+            logging.info('==> Creating 2D data for training')
             self.keypoints_train = create_2d_data(config.data.dataset_path_train_2d, dataset)
+            logging.info('==> Creating 2D data for testing')
             self.keypoints_test = create_2d_data(config.data.dataset_path_test_2d, dataset)
 
+            logging.info('==> Setting up action filter')
             self.action_filter = None if args.actions == '*' else args.actions.split(',')
             if self.action_filter is not None:
                 self.action_filter = map(lambda x: dataset.define_actions(x)[0], self.action_filter)
-                print('==> Selected actions: {}'.format(self.action_filter))
+                logging.info('==> Selected actions: {}'.format(self.action_filter))
+            logging.info('==> Data preparation complete')
         else:
             raise KeyError('Invalid dataset')
 
@@ -81,13 +92,23 @@ class Diffpose(object):
                             [8, 11], [11, 12], [12, 13],
                             [8, 14], [14, 15], [15, 16]], dtype=torch.long)
         adj = adj_mx_from_edges(num_pts=17, edges=edges, sparse=False)
+        
+        logging.info(f"Creating diffusion model with GCNdiff...")
+        
         self.model_diff = GCNdiff(adj.cuda(), config).cuda()
         self.model_diff = torch.nn.DataParallel(self.model_diff)
         
+        # Debug: Print model parameter information
+        total_params = sum(p.numel() for p in self.model_diff.parameters())
+        trainable_params = sum(p.numel() for p in self.model_diff.parameters() if p.requires_grad)
+        logging.info(f"GCNdiff model created - Total parameters: {total_params}, Trainable: {trainable_params}")
+        
         # load pretrained model
         if model_path:
+            logging.info(f"Loading pretrained GCNdiff model from {model_path}")
             states = torch.load(model_path)
             self.model_diff.load_state_dict(states[0])
+            logging.info(f"GCNdiff model loaded successfully")
             
     def create_pose_model(self, model_path = None):
         args, config = self.args, self.config
@@ -100,14 +121,24 @@ class Diffpose(object):
                             [8, 11], [11, 12], [12, 13],
                             [8, 14], [14, 15], [15, 16]], dtype=torch.long)
         adj = adj_mx_from_edges(num_pts=17, edges=edges, sparse=False)
+        
+        logging.info(f"Creating GCNpose model...")
+        logging.info(f"Coords dimensions set to: {config.model.coords_dim}")
+        
         self.model_pose = GCNpose(adj.cuda(), config).cuda()
         self.model_pose = torch.nn.DataParallel(self.model_pose)
+        
+        # Debug: Print model parameter information
+        total_params = sum(p.numel() for p in self.model_pose.parameters())
+        trainable_params = sum(p.numel() for p in self.model_pose.parameters() if p.requires_grad)
+        logging.info(f"GCNpose model created - Total parameters: {total_params}, Trainable: {trainable_params}")
         
         # load pretrained model
         if model_path:
             logging.info('initialize model by:' + model_path)
             states = torch.load(model_path)
             self.model_pose.load_state_dict(states[0])
+            logging.info(f"GCNpose model loaded successfully")
         else:
             logging.info('initialize model randomly')
 
@@ -123,12 +154,18 @@ class Diffpose(object):
         
         # create dataloader
         if config.data.dataset == "human36m":
+            logging.info("Creating training data loader...")
             poses_train, poses_train_2d, actions_train, camerapara_train\
                 = fetch_me(self.subjects_train, self.dataset, self.keypoints_train, self.action_filter, stride)
+            
+            logging.info(f"Training data: {len(poses_train)} sets, {len(poses_train_2d)} 2D sets")
+            
             data_loader = train_loader = data.DataLoader(
                 PoseGenerator_gmm(poses_train, poses_train_2d, actions_train, camerapara_train),
                 batch_size=config.training.batch_size, shuffle=True,\
                     num_workers=config.training.num_workers, pin_memory=True)
+            
+            logging.info(f"Training data loader created with {len(data_loader)} batches of size {config.training.batch_size}")
         else:
             raise KeyError('Invalid dataset')
         
@@ -227,16 +264,27 @@ class Diffpose(object):
         cudnn.benchmark = True
 
         args, config, src_mask = self.args, self.config, self.src_mask
-        test_times, test_timesteps, test_num_diffusion_timesteps, stride = \
-            config.testing.test_times, config.testing.test_timesteps, config.testing.test_num_diffusion_timesteps, args.downsample
+        
+        # IMPORTANT: Use the values from the config file instead of args
+        test_times = config.testing.test_times
+        test_timesteps = config.testing.test_timesteps
+        test_num_diffusion_timesteps = config.testing.test_num_diffusion_timesteps
+        stride = args.downsample
+        
+        logging.info(f"Using config test parameters: times={test_times}, steps={test_timesteps}, diffusion_timesteps={test_num_diffusion_timesteps}")
                 
         if config.data.dataset == "human36m":
             poses_valid, poses_valid_2d, actions_valid, camerapara_valid = \
                 fetch_me(self.subjects_test, self.dataset, self.keypoints_test, self.action_filter, stride)
+                
+            logging.info(f"Validation data: {len(poses_valid)} samples")
+            
             data_loader = valid_loader = data.DataLoader(
                 PoseGenerator_gmm(poses_valid, poses_valid_2d, actions_valid, camerapara_valid),
                 batch_size=config.training.batch_size, shuffle=False, 
                 num_workers=config.training.num_workers, pin_memory=True)
+                
+            logging.info(f"Validation data loader created with {len(data_loader)} batches")
         else:
             raise KeyError('Invalid dataset') 
 
@@ -248,25 +296,30 @@ class Diffpose(object):
         self.model_diff.eval()
         self.model_pose.eval()
         
-        try:
-            skip = self.args.skip
-        except Exception:
-            skip = 1
-        
+        # Generate diffusion sequence using config parameters
         if self.args.skip_type == "uniform":
             skip = test_num_diffusion_timesteps // test_timesteps
-            seq = range(0, test_num_diffusion_timesteps, skip)
+            seq = list(range(0, test_num_diffusion_timesteps, skip))
         elif self.args.skip_type == "quad":
             seq = (np.linspace(0, np.sqrt(test_num_diffusion_timesteps * 0.8), test_timesteps)** 2)
             seq = [int(s) for s in list(seq)]
         else:
             raise NotImplementedError
         
+        # Ensure seq doesn't exceed the number of betas
+        max_seq_value = self.num_timesteps - 1
+        seq = [min(s, max_seq_value) for s in seq]
+        
+        logging.info(f"Diffusion sequence: length={len(seq)}, max={max(seq)}")
+        
         epoch_loss_3d_pos = AverageMeter()
         epoch_loss_3d_pos_procrustes = AverageMeter()
         self.test_action_list = ['Directions','Discussion','Eating','Greeting','Phoning','Photo','Posing','Purchases','Sitting',\
             'SittingDown','Smoking','Waiting','WalkDog','Walking','WalkTogether']
-        action_error_sum = define_error_list(self.test_action_list)        
+        action_error_sum = define_error_list(self.test_action_list)   
+
+        # Log only once before the loop
+        logging.info("Starting diffusion sampling for all batches...")
 
         for i, (_, input_noise_scale, input_2d, targets_3d, input_action, camera_para) in enumerate(data_loader):
             data_time += time.time() - data_start
@@ -274,37 +327,49 @@ class Diffpose(object):
             input_noise_scale, input_2d, targets_3d = \
                 input_noise_scale.to(self.device), input_2d.to(self.device), targets_3d.to(self.device)
 
-            # build uvxyz
-            inputs_xyz = self.model_pose(input_2d, src_mask)            
+            # Build uvxyz
+            inputs_xyz = self.model_pose(input_2d, src_mask)
+            
+            if i == 0:
+                logging.info(f"GCNpose output shape: {inputs_xyz.shape}")
+            
             inputs_xyz[:, :, :] -= inputs_xyz[:, :1, :] 
             input_uvxyz = torch.cat([input_2d,inputs_xyz],dim=2)
-                        
-            # generate distribution
+                    
+            # Generate distribution
             input_uvxyz = input_uvxyz.repeat(test_times,1,1)
             input_noise_scale = input_noise_scale.repeat(test_times,1,1)
-            # select diffusion step
-            t = torch.ones(input_uvxyz.size(0)).type(torch.LongTensor).to(self.device)*test_num_diffusion_timesteps
             
-            # prepare the diffusion parameters
+            # Select diffusion step - make sure this doesn't exceed num_timesteps
+            t = torch.ones(input_uvxyz.size(0)).type(torch.LongTensor).to(self.device) * min(test_num_diffusion_timesteps, self.num_timesteps - 1)
+            
+            # Prepare the diffusion parameters
             x = input_uvxyz.clone()
             e = torch.randn_like(input_uvxyz)
             b = self.betas   
             e = e*input_noise_scale        
             a = (1-b).cumprod(dim=0).index_select(0, t).view(-1, 1, 1)
-            # x = x * a.sqrt() + e * (1.0 - a).sqrt()
             
-            output_uvxyz = generalized_steps(x, src_mask, seq, self.model_diff, self.betas, eta=self.args.eta)
-            output_uvxyz = output_uvxyz[0][-1]            
-            output_uvxyz = torch.mean(output_uvxyz.reshape(test_times,-1,17,5),0)
-            output_xyz = output_uvxyz[:,:,2:]
-            output_xyz[:, :, :] -= output_xyz[:, :1, :]
-            targets_3d[:, :, :] -= targets_3d[:, :1, :]
-            epoch_loss_3d_pos.update(mpjpe(output_xyz, targets_3d).item() * 1000.0, targets_3d.size(0))
-            epoch_loss_3d_pos_procrustes.update(p_mpjpe(output_xyz.cpu().numpy(), targets_3d.cpu().numpy()).item() * 1000.0, targets_3d.size(0))\
+            try:
+                # Remove the per-batch logging message
+                # logging.info("Running generalized_steps diffusion sampling...")
+                
+                output_uvxyz = generalized_steps(x, src_mask, seq, self.model_diff, self.betas, eta=self.args.eta)
+                output_uvxyz = output_uvxyz[0][-1]           
+                output_uvxyz = torch.mean(output_uvxyz.reshape(test_times,-1,17,5),0)
+                output_xyz = output_uvxyz[:,:,2:]
+                output_xyz[:, :, :] -= output_xyz[:, :1, :]
+                targets_3d[:, :, :] -= targets_3d[:, :1, :]
+                
+                epoch_loss_3d_pos.update(mpjpe(output_xyz, targets_3d).item() * 1000.0, targets_3d.size(0))
+                epoch_loss_3d_pos_procrustes.update(p_mpjpe(output_xyz.cpu().numpy(), targets_3d.cpu().numpy()).item() * 1000.0, targets_3d.size(0))
+                
+                action_error_sum = test_calculation(output_xyz, targets_3d, input_action, action_error_sum, None, None)
+            except Exception as e:
+                logging.error(f"Error in generalized_steps: {e}")
+                raise
             
             data_start = time.time()
-            
-            action_error_sum = test_calculation(output_xyz, targets_3d, input_action, action_error_sum, None, None)
             
             if i%100 == 0 and i != 0:
                 logging.info('({batch}/{size}) Data: {data:.6f}s | MPJPE: {e1: .4f} | P-MPJPE: {e2: .4f}'\
@@ -317,3 +382,4 @@ class Diffpose(object):
         p1, p2 = print_error(None, action_error_sum, is_train)
 
         return p1, p2
+    
