@@ -51,7 +51,7 @@ optim:
 deq:
     # General DEQ settings
     enabled: false
-    default_iterations: 1
+    default_iterations: 5
     best_epoch_iterations: 15
     warm_up_epochs: 20
     min_epoch_for_increase: 10

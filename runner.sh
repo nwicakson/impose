@@ -16,18 +16,19 @@ traingt() {
 
 trainimpose() {
     CUDA_VISIBLE_DEVICES=0 python main_idiffpose_frame.py \
-    --train --config human36m_diffpose_uvxyz_deq.yml \
+    --train --config human36m_diffpose_uvxyz_deq.yml --deq_enabled --deq_middle_layer --deq_final_layer \
     --model_pose_path checkpoints/gcn_xyz_gt.pth \
     --batch_size 1024 --test_times 1 --test_timesteps 2 --test_num_diffusion_timesteps 12 \
-    --doc idiffpose13
+    --doc idiffpose_deq_implicit
 }
 
 trainimpose2() {
     CUDA_VISIBLE_DEVICES=2 python main_idiffpose_frame.py \
-    --train --config human36m_diffpose_uvxyz_deq.yml  --deq_enabled --deq_middle_layer --deq_final_layer \
+    --train --config human36m_diffpose_uvxyz_deq_50.yml  --deq_enabled --deq_middle_layer --deq_final_layer \
+    --deq_iterations 1 --deq_best_iterations 50 --best_epoch \
     --model_pose_path checkpoints/gcn_xyz_gt.pth \
     --batch_size 1024 --test_times 1 --test_timesteps 2 --test_num_diffusion_timesteps 12 \
-    --doc idiffpose_a
+    --doc idiffpose_deq_implicit_1_50
 }
 
 testcpn() {

@@ -69,8 +69,10 @@ class GCNdiff(nn.Module):
         self.hid_dim = self.hid_dim
         self.emd_dim = self.hid_dim*4
         
+        logging.info(f"Using Implicit GCNdiff")
+        
         # Print model configuration (just once during initialization)
-        logging.info(f"GCNdiff Configuration: dims={self.hid_dim}/{self.emd_dim}, layers={num_layers}, heads={n_head}")
+        logging.info(f"IGCNdiff Configuration: dims={self.hid_dim}/{self.emd_dim}, layers={num_layers}, heads={n_head}")
                 
         ### Generate Graphformer  ###
         self.n_layers = num_layers
@@ -102,7 +104,7 @@ class GCNdiff(nn.Module):
                 self.use_middle_layer_deq = self.use_middle_layer_deq and getattr(config.deq.components, 'middle_layer', False)
         
         # Log DEQ settings
-        logging.info(f"GCNdiff DEQ Settings: enabled={self.use_middle_layer_deq}")
+        logging.info(f"IGCNdiff DEQ Settings: enabled={self.use_middle_layer_deq}")
         
         mid_idx = num_layers // 2
         
@@ -149,13 +151,11 @@ class GCNdiff(nn.Module):
         mid_idx = self.n_layers // 2
         
         if self.use_middle_layer_deq and hasattr(self, 'deq_block'):
-            logging.info("Using DEQ for middle layer")
             try:
                 # Apply DEQ to middle layer
                 mid_out, iterations = self.deq_block(out, mask, temb)
                 self.deq_manager.update_stats(iterations)
                 out = mid_out
-                logging.info(f"DEQ iterations: {iterations}")
             except Exception as e:
                 # If DEQ fails, fall back to standard processing
                 logging.warning(f"DEQ failed: {e}, using standard forward pass")

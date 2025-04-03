@@ -15,7 +15,7 @@ import torch.backends.cudnn as cudnn
 # IMPORTANT: Import the original models, not the implicit ones
 # for baseline performance comparison
 from models.gcnpose import GCNpose, adj_mx_from_edges
-from models.gcndiff import GCNdiff, adj_mx_from_edges
+from models.igcndiff import GCNdiff, adj_mx_from_edges
 from models.ema import EMAHelper
 
 from common.utils import *
@@ -82,11 +82,11 @@ class Diffpose(object):
         # DEQ configuration - will be updated from config file
         self.deq_schedule = {
             'enabled': False,  # Default to disabled for safety
-            'default_iterations': 1,
-            'best_epoch_iterations': 3,  # Limited iterations even for best model
+            'default_iterations': 5,
+            'best_epoch_iterations': 15,  # Limited iterations even for best model
             'min_epoch_for_increase': 10,  # Only increase iterations after this epoch
             'warm_up_epochs': 20,          # Use minimal iterations for these epochs
-            'max_iterations': 5,           # Lower maximum to avoid divergence
+            'max_iterations': 15,           # Lower maximum to avoid divergence
             'tolerance': 0.001             # More relaxed tolerance
         }
         

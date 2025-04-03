@@ -76,9 +76,9 @@ def parse_args_and_config():
                     help='enable DEQ for final layer')
     parser.add_argument('--deq_iterations', default=1, type=int,
                       help='default number of DEQ iterations')
-    parser.add_argument('--deq_best_iterations', default=1, type=int,
+    parser.add_argument('--deq_best_iterations', default=15, type=int,
                       help='number of DEQ iterations for best epoch')
-    parser.add_argument('--best_epoch', action='store_false',
+    parser.add_argument('--best_epoch', action='store_true',
                       help='run evaluation with best epoch settings (more iterations)')
 
     args = parser.parse_args()
@@ -111,8 +111,8 @@ def parse_args_and_config():
 
     new_config.deq.components.middle_layer = args.deq_middle_layer and args.deq_enabled
     new_config.deq.components.final_layer = args.deq_final_layer and args.deq_enabled
-    new_config.deq.default_iterations = 1
-    new_config.deq.best_epoch_iterations = 1
+    new_config.deq.default_iterations = 5
+    new_config.deq.best_epoch_iterations = 15
 
     if args.train:
         if os.path.exists(args.log_path):

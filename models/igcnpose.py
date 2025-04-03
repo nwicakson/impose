@@ -53,8 +53,10 @@ class GCNpose(nn.Module):
         self.hid_dim = self.hid_dim
         self.emd_dim = self.hid_dim*4
         
+        logging.info(f"Using Implicit GCNpose")
+        
         # Print model configuration (just once during initialization)
-        logging.info(f"GCNpose Configuration: dims={self.hid_dim}/{self.emd_dim}, layers={num_layers}, heads={n_head}")
+        logging.info(f"IGCNpose Configuration: dims={self.hid_dim}/{self.emd_dim}, layers={num_layers}, heads={n_head}")
                 
         ### Generate Graphformer  ###
         self.n_layers = num_layers
@@ -85,7 +87,7 @@ class GCNpose(nn.Module):
                 self.use_deq_refinement = self.use_deq_refinement and getattr(config.deq.components, 'final_layer', False)
         
         # Log DEQ settings
-        logging.info(f"GCNpose DEQ Settings: use_deq_refinement={self.use_deq_refinement}")
+        logging.info(f"IGCNpose DEQ Settings: use_deq_refinement={self.use_deq_refinement}")
         
         # Flag for best epoch
         self.is_best_epoch = False
