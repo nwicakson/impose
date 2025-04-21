@@ -8,7 +8,7 @@ import os
 import torch
 import numpy as np
 
-from runners.idiffpose_frame import Diffpose
+from runners.idiffpose_frame import IDiffpose
 
 
 torch.set_printoptions(sci_mode=False)
@@ -67,16 +67,16 @@ def parse_args_and_config():
     parser.add_argument('--test_num_diffusion_timesteps', default=500, type=int, metavar='N',
                     help='the number of test times')
     
-    # DEQ configuration parameters - overriding to always disable DEQ
+    # DEQ configuration parameters
     parser.add_argument('--deq_enabled', action='store_true',
                   help='enable DEQ in the model')
     parser.add_argument('--deq_middle_layer', action='store_true',
                     help='enable DEQ for middle layer')
     parser.add_argument('--deq_final_layer', action='store_true',
                     help='enable DEQ for final layer')
-    parser.add_argument('--deq_iterations', default=1, type=int,
+    parser.add_argument('--deq_iterations', default=5, type=int,
                       help='default number of DEQ iterations')
-    parser.add_argument('--deq_best_iterations', default=15, type=int,
+    parser.add_argument('--deq_best_iterations', default=50, type=int,
                       help='number of DEQ iterations for best epoch')
     parser.add_argument('--best_epoch', action='store_true',
                       help='run evaluation with best epoch settings (more iterations)')
@@ -99,20 +99,25 @@ def parse_args_and_config():
     new_config.optim.lr_gamma = args.lr_gamma
     new_config.optim.decay = args.decay
 
-    # Override DEQ settings to disable
+    # Override DEQ settings
     if not hasattr(new_config, 'deq'):
         new_config.deq = argparse.Namespace()
     
     # Use argument values for DEQ settings
     new_config.deq.enabled = args.deq_enabled
+    logging.info(f"DEQ enabled status from args: {args.deq_enabled}")
 
     if not hasattr(new_config.deq, 'components'):
         new_config.deq.components = argparse.Namespace()
 
     new_config.deq.components.middle_layer = args.deq_middle_layer and args.deq_enabled
     new_config.deq.components.final_layer = args.deq_final_layer and args.deq_enabled
-    new_config.deq.default_iterations = 5
-    new_config.deq.best_epoch_iterations = 15
+    new_config.deq.default_iterations = args.deq_iterations  # Use value from args
+    new_config.deq.best_epoch_iterations = args.deq_best_iterations  # Use value from args
+    
+    logging.info(f"DEQ configuration: enabled={new_config.deq.enabled}, " +
+             f"default_iterations={new_config.deq.default_iterations}, " +
+             f"best_epoch_iterations={new_config.deq.best_epoch_iterations}")
 
     if args.train:
         if os.path.exists(args.log_path):
@@ -196,11 +201,11 @@ def main():
     
     # Log the test parameters being used
     logging.info(f"Testing parameters: times={args.test_times}, steps={args.test_timesteps}, diffusion={args.test_num_diffusion_timesteps}")
-    logging.info(f"DEQ settings: enabled=False (forced)")
+    logging.info(f"DEQ settings: enabled={args.deq_enabled}, iterations={args.deq_iterations}, best_iterations={args.deq_best_iterations}")
     
     try:
         # Create the runner
-        runner = Diffpose(args, config)
+        runner = IDiffpose(args, config)
         
         # Load models
         runner.create_diffusion_model(args.model_diff_path)
@@ -212,8 +217,8 @@ def main():
         if args.train:
             runner.train()
         else:
-            # Always use standard evaluation (no best_epoch special handling)
-            _, _ = runner.test_hyber(is_train=False, is_best_epoch=False)
+            # Use best_epoch flag to determine evaluation mode
+            runner.test_hyber(is_train=False, is_best_epoch=args.best_epoch)
             
     except Exception:
         logging.error(traceback.format_exc())

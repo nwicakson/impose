@@ -12,8 +12,7 @@ import torch.utils.data as data
 import torch.backends.cudnn as cudnn
 
 
-# IMPORTANT: Import the original models, not the implicit ones
-# for baseline performance comparison
+# IMPORTANT: Import the original gcnpose
 from models.gcnpose import GCNpose, adj_mx_from_edges
 from models.igcndiff import GCNdiff, adj_mx_from_edges
 from models.ema import EMAHelper
@@ -136,16 +135,33 @@ class Diffpose(object):
         logging.info(f"Test subjects: {self.subjects_test}")
 
     def _set_deq_iterations(self, is_best_epoch=False, is_training=True):
-        # Check the actual schedule setting
+        """
+        Configure DEQ iterations for the model based on the current state
+        """
+        # Check if DEQ is enabled 
         if self.deq_schedule['enabled']:
-            iterations = self.deq_schedule['best_epoch_iterations'] if is_best_epoch else self.deq_schedule['default_iterations']
-            logging.info(f"DEQ is enabled with {iterations} iterations" + (" (best epoch)" if is_best_epoch else ""))
-            
-            # Actually configure any DEQ components here (model-specific)
-            # For example, if your model has DEQ components:
+            if is_best_epoch:
+                iterations = self.deq_schedule['best_epoch_iterations']
+                logging.info(f"DEQ is enabled with {iterations} iterations (best epoch)")
+            else:
+                iterations = self.deq_schedule['default_iterations']
+                logging.info(f"DEQ is enabled with {iterations} iterations")
+                
+            # Apply to model components
             if hasattr(self.model_diff, 'module') and hasattr(self.model_diff.module, 'deq_manager'):
                 for component in self.model_diff.module.deq_manager.components:
+                    previous_iter = component.iterations
                     component.iterations = iterations
+                    if previous_iter != iterations:
+                        logging.info(f"Changed DEQ component '{component.name}' from {previous_iter} to {iterations} iterations")
+                        
+            # Apply to pose model if needed
+            if hasattr(self.model_pose, 'module') and hasattr(self.model_pose.module, 'deq_manager'):
+                for component in self.model_pose.module.deq_manager.components:
+                    previous_iter = component.iterations
+                    component.iterations = iterations
+                    if previous_iter != iterations:
+                        logging.info(f"Changed DEQ component '{component.name}' from {previous_iter} to {iterations} iterations")
         else:
             logging.info("DEQ is disabled, using standard processing")
 
@@ -159,7 +175,7 @@ class Diffpose(object):
                             [8, 14], [14, 15], [15, 16]], dtype=torch.long)
         adj = adj_mx_from_edges(num_pts=17, edges=edges, sparse=False)
         
-        logging.info(f"Creating diffusion model...")
+        logging.info(f"Creating implicit diffusion model...")
         
         self.model_diff = GCNdiff(adj.cuda(), config).cuda()
         self.model_diff = torch.nn.DataParallel(self.model_diff)
@@ -167,14 +183,32 @@ class Diffpose(object):
         # Debug: Print model parameter information
         total_params = sum(p.numel() for p in self.model_diff.parameters())
         trainable_params = sum(p.numel() for p in self.model_diff.parameters() if p.requires_grad)
-        logging.info(f"GCNdiff model created - Total parameters: {total_params}, Trainable: {trainable_params}")
+        logging.info(f"IGCNdiff model created - Total parameters: {total_params}, Trainable: {trainable_params}")
         
         # load pretrained model
         if model_path:
-            logging.info(f"Loading pretrained GCNdiff model from {model_path}")
+            logging.info(f"Loading pretrained IGCNdiff model from {model_path}")
             states = torch.load(model_path)
-            self.model_diff.load_state_dict(states[0])
-            logging.info(f"GCNdiff model loaded successfully")
+            
+            try:
+                self.model_diff.load_state_dict(states[0])
+                logging.info(f"IGCNdiff model loaded successfully")
+            except Exception as e:
+                logging.warning(f"Direct loading failed: {e}")
+                logging.info("Attempting to load compatible parameters...")
+                
+                # Load the parameters that match
+                model_dict = self.model_diff.state_dict()
+                pretrained_dict = states[0]
+                
+                # Filter out incompatible keys
+                compatible_dict = {k: v for k, v in pretrained_dict.items() 
+                              if k in model_dict and model_dict[k].shape == v.shape}
+                
+                model_dict.update(compatible_dict)
+                self.model_diff.load_state_dict(model_dict)
+                
+                logging.info(f"Loaded {len(compatible_dict)}/{len(pretrained_dict)} parameters from checkpoint")
             
     def create_pose_model(self, model_path = None):
         args, config = self.args, self.config
@@ -188,7 +222,7 @@ class Diffpose(object):
                             [8, 14], [14, 15], [15, 16]], dtype=torch.long)
         adj = adj_mx_from_edges(num_pts=17, edges=edges, sparse=False)
         
-        logging.info(f"Creating GCNpose model...")
+        logging.info(f"Creating IGCNpose model...")
         logging.info(f"Coords dimensions set to: {config.model.coords_dim}")
         
         self.model_pose = GCNpose(adj.cuda(), config).cuda()
@@ -197,16 +231,34 @@ class Diffpose(object):
         # Debug: Print model parameter information
         total_params = sum(p.numel() for p in self.model_pose.parameters())
         trainable_params = sum(p.numel() for p in self.model_pose.parameters() if p.requires_grad)
-        logging.info(f"GCNpose model created - Total parameters: {total_params}, Trainable: {trainable_params}")
+        logging.info(f"IGCNpose model created - Total parameters: {total_params}, Trainable: {trainable_params}")
         
         # load pretrained model
         if model_path:
-            logging.info('initialize model by:' + model_path)
+            logging.info('Loading pose model from: ' + model_path)
             states = torch.load(model_path)
-            self.model_pose.load_state_dict(states[0])
-            logging.info(f"GCNpose model loaded successfully")
+            
+            try:
+                self.model_pose.load_state_dict(states[0])
+                logging.info(f"IGCNpose model loaded successfully")
+            except Exception as e:
+                logging.warning(f"Direct loading failed: {e}")
+                logging.info("Attempting to load compatible parameters...")
+                
+                # Load the parameters that match
+                model_dict = self.model_pose.state_dict()
+                pretrained_dict = states[0]
+                
+                # Filter out incompatible keys
+                compatible_dict = {k: v for k, v in pretrained_dict.items() 
+                              if k in model_dict and model_dict[k].shape == v.shape}
+                
+                model_dict.update(compatible_dict)
+                self.model_pose.load_state_dict(model_dict)
+                
+                logging.info(f"Loaded {len(compatible_dict)}/{len(model_dict)} parameters from checkpoint")
         else:
-            logging.info('initialize model randomly')
+            logging.info('Initializing model with random weights')
 
     def train(self):
         """
@@ -375,17 +427,23 @@ class Diffpose(object):
                     
                 logging.info('| Best Epoch: {:0>4d} MPJPE: {:.2f} | Epoch: {:0>4d} MPJEPE: {:.2f} PA-MPJPE: {:.2f} |'\
                     .format(best_epoch, best_p1, epoch, p1, p2))
-
+    
     def test_hyber(self, is_train=False, is_best_epoch=False):
         """
-        Test function that closely matches the original diffpose_frame implementation
-        with no DEQ-specific modifications.
+        Test function that correctly applies DEQ configuration for best epochs
         """
         cudnn.benchmark = True
 
         args, config, src_mask = self.args, self.config, self.src_mask
         
-        # IMPORTANT: Force these to match original diffpose exactly
+        # Check if this is a best epoch evaluation
+        if not is_best_epoch and hasattr(self, 'best_epoch') and self.best_epoch > 0:
+            is_best_epoch = (args.best_epoch == True)  # Use explicit flag from command line
+        
+        # Set DEQ iterations based on whether this is the best epoch
+        self._set_deq_iterations(is_best_epoch=is_best_epoch, is_training=False)
+        
+        # IMPORTANT: Use fixed test parameters
         test_times = args.test_times
         test_timesteps = args.test_timesteps
         test_num_diffusion_timesteps = args.test_num_diffusion_timesteps
@@ -416,21 +474,22 @@ class Diffpose(object):
         self.model_diff.eval()
         self.model_pose.eval()
         
-        # This is a no-op with DEQ disabled
-        self._set_deq_iterations(is_best_epoch=is_best_epoch, is_training=False)
-        
         # Generate diffusion sequence using fixed parameters to match original
         if args.skip_type == "uniform":
             skip = test_num_diffusion_timesteps // test_timesteps
-            seq = range(0, test_num_diffusion_timesteps, skip)
+            seq = list(range(0, test_num_diffusion_timesteps, skip))
         elif args.skip_type == "quad":
             seq = (np.linspace(0, np.sqrt(test_num_diffusion_timesteps * 0.8), test_timesteps)** 2)
             seq = [int(s) for s in list(seq)]
         else:
             raise NotImplementedError
         
+        # Ensure seq doesn't exceed the number of betas
+        max_seq_value = self.num_timesteps - 1
+        seq = [min(s, max_seq_value) for s in seq]
+        
         # Print diffusion sequence info once
-        logging.info(f"Diffusion steps: {len(seq)}, sequence: {list(seq)}")
+        logging.info(f"Diffusion steps: {len(seq)}, sequence: {seq}")
         
         epoch_loss_3d_pos = AverageMeter()
         epoch_loss_3d_pos_procrustes = AverageMeter()
@@ -460,50 +519,53 @@ class Diffpose(object):
             input_uvxyz = input_uvxyz.repeat(test_times,1,1)
             input_noise_scale = input_noise_scale.repeat(test_times,1,1)
             # Select diffusion step
-            t = torch.ones(input_uvxyz.size(0)).type(torch.LongTensor).to(self.device)*test_num_diffusion_timesteps
+            t = torch.ones(input_uvxyz.size(0)).type(torch.LongTensor).to(self.device) * min(test_num_diffusion_timesteps, self.num_timesteps - 1)
             
             # Prepare the diffusion parameters
-            x = input_uvxyz
+            x = input_uvxyz.clone()
             e = torch.randn_like(input_uvxyz)
             b = self.betas   
             e = e*input_noise_scale        
             a = (1-b).cumprod(dim=0).index_select(0, t).view(-1, 1, 1)
             
-            # IMPORTANT: Force no DEQ-specific handling
-            # Use the exact same diffusion process as original
-            output_uvxyz = generalized_steps(x, src_mask, seq, self.model_diff, self.betas, eta=args.eta)
-            
-            # Debug first batch
-            if i == 0:
-                logging.info(f"generalized_steps output: type={type(output_uvxyz)}")
-                if isinstance(output_uvxyz, tuple) and len(output_uvxyz) > 0:
-                    logging.info(f"  output_uvxyz[0] length: {len(output_uvxyz[0])}")
-            
-            output_uvxyz = output_uvxyz[0][-1]
-            output_uvxyz = torch.mean(output_uvxyz.reshape(test_times,-1,17,5),0)
-            output_xyz = output_uvxyz[:,:,2:]
-            
-            output_xyz[:, :, :] -= output_xyz[:, :1, :]
-            targets_3d[:, :, :] -= targets_3d[:, :1, :]
-            
-            # Scale correction - identical to original implementation
-            scale_factor = (targets_3d.abs().mean() / output_xyz.abs().mean()).detach()
-            output_xyz = output_xyz * scale_factor
-            
-            if i == 0:
-                logging.info(f"Applied scale factor: {scale_factor.item():.4f}")
-            
-            # Calculate metrics
-            current_mpjpe = mpjpe(output_xyz, targets_3d).item() * 1000.0
-            current_p_mpjpe = p_mpjpe(output_xyz.cpu().numpy(), targets_3d.cpu().numpy()).item() * 1000.0
-            
-            if i == 0:
-                logging.info(f"First batch MPJPE: {current_mpjpe:.4f}, P-MPJPE: {current_p_mpjpe:.4f}")
-            
-            epoch_loss_3d_pos.update(current_mpjpe, targets_3d.size(0))
-            epoch_loss_3d_pos_procrustes.update(current_p_mpjpe, targets_3d.size(0))
-            
-            action_error_sum = test_calculation(output_xyz, targets_3d, input_action, action_error_sum, None, None)
+            try:
+                # Use the standard diffusion process
+                output_uvxyz = generalized_steps(x, src_mask, seq, self.model_diff, self.betas, eta=args.eta)
+                
+                # Debug first batch
+                if i == 0:
+                    logging.info(f"generalized_steps output: type={type(output_uvxyz)}")
+                    if isinstance(output_uvxyz, tuple) and len(output_uvxyz) > 0:
+                        logging.info(f"  output_uvxyz[0] length: {len(output_uvxyz[0])}")
+                
+                output_uvxyz = output_uvxyz[0][-1]
+                output_uvxyz = torch.mean(output_uvxyz.reshape(test_times,-1,17,5),0)
+                output_xyz = output_uvxyz[:,:,2:]
+                
+                output_xyz[:, :, :] -= output_xyz[:, :1, :]
+                targets_3d[:, :, :] -= targets_3d[:, :1, :]
+                
+                # Scale correction - identical to original implementation
+                scale_factor = (targets_3d.abs().mean() / output_xyz.abs().mean()).detach()
+                output_xyz = output_xyz * scale_factor
+                
+                if i == 0:
+                    logging.info(f"Applied scale factor: {scale_factor.item():.4f}")
+                
+                # Calculate metrics
+                current_mpjpe = mpjpe(output_xyz, targets_3d).item() * 1000.0
+                current_p_mpjpe = p_mpjpe(output_xyz.cpu().numpy(), targets_3d.cpu().numpy()).item() * 1000.0
+                
+                if i == 0:
+                    logging.info(f"First batch MPJPE: {current_mpjpe:.4f}, P-MPJPE: {current_p_mpjpe:.4f}")
+                
+                epoch_loss_3d_pos.update(current_mpjpe, targets_3d.size(0))
+                epoch_loss_3d_pos_procrustes.update(current_p_mpjpe, targets_3d.size(0))
+                
+                action_error_sum = test_calculation(output_xyz, targets_3d, input_action, action_error_sum, None, None)
+            except Exception as e:
+                logging.error(f"Error in generalized_steps: {e}")
+                raise
             
             data_start = time.time()
             
@@ -520,5 +582,12 @@ class Diffpose(object):
         p1, p2 = print_error(None, action_error_sum, is_train)
         
         logging.info(f"Final MPJPE: {p1:.4f}, P-MPJPE: {p2:.4f}")
+        
+        if is_best_epoch:
+            logging.info(f"Best epoch evaluation with {self.deq_schedule['best_epoch_iterations']} iterations completed")
+            logging.info(f"Final MPJPE: {p1:.4f}, P-MPJPE: {p2:.4f} (best epoch settings)")
+        else:
+            logging.info(f"Standard evaluation with {self.deq_schedule['default_iterations']} iterations completed")
+            logging.info(f"Final MPJPE: {p1:.4f}, P-MPJPE: {p2:.4f}")
 
         return p1, p2

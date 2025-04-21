@@ -118,14 +118,20 @@ class GCNpose(nn.Module):
             out = self.gconv_layers[i](out)
         
         # For the last layer, we can use DEQ refinement when needed
-        if self.use_deq_refinement and hasattr(self, 'is_best_epoch') and self.is_best_epoch:
-            logging.info("Using DEQ for final layer refinement")
+        if self.use_deq_refinement and hasattr(self, 'deq_refinement'):
+            # Check DEQ iterations to determine if this is likely a best epoch evaluation
+            is_best_run = False
+            if hasattr(self.deq_refinement, 'iterations') and self.deq_refinement.iterations > 15:
+                is_best_run = True
+                logging.info(f"Using DEQ refinement with {self.deq_refinement.iterations} iterations (best epoch mode)")
+            
             try:
                 # Apply DEQ to final layer for refinement
                 refined_out, iterations = self.deq_refinement(out, mask)
                 self.deq_manager.update_stats(iterations)
                 out = refined_out
-                logging.info(f"DEQ iterations: {iterations}")
+                if iterations > 5:  # Only log if significant number of iterations
+                    logging.info(f"DEQ completed {iterations} iterations")
             except Exception as e:
                 # Fall back to standard processing
                 logging.warning(f"DEQ refinement failed: {e}, using standard forward pass")

@@ -107,6 +107,9 @@ class DEQAttentionBlock(nn.Module):
         self.residual_history = []
         actual_iters = 0
         
+        # Add debug logging
+        logging.debug(f"Starting DEQ iterations (max={self.iterations}) for {self.name}")
+        
         # Perform DEQ iterations
         for i in range(self.iterations):
             actual_iters += 1
@@ -125,18 +128,22 @@ class DEQAttentionBlock(nn.Module):
             
             if self.track_residuals:
                 self.residual_history.append(residual.item())
+                logging.debug(f"DEQ {self.name} iteration {i+1}: residual = {residual.item():.6f}")
             
             # Check for convergence
             if residual < self.tolerance:
                 z = z_new  # Update to final state
+                logging.debug(f"DEQ {self.name} converged after {i+1} iterations (residual={residual.item():.6f})")
                 break
                 
             # Update state
             z = z_new
-            actual_iters += 1
+        
+        if actual_iters == self.iterations:
+            logging.debug(f"DEQ {self.name} reached max iterations ({self.iterations}) without convergence")
         
         return z, actual_iters
-
+    
 class DEQManager:
     """
     Utility class to manage multiple DEQ components in a model.
