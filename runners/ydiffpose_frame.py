@@ -181,16 +181,11 @@ class Diffpose(object):
         # initialize the recorded best performance
         best_p1, best_epoch = 1000, 0
         
-        # FIXED: Get downsample from data.downsample in config instead of args.downsample
-        # This is likely how the original implementation does it
-        stride = getattr(args, 'downsample', 1)  # Default to 1 if not found
-        logging.info(f"Using downsample stride: {stride}")
-        
         # create dataloader
         if config.data.dataset == "human36m":
             logging.info("Creating training data loader...")
             poses_train, poses_train_2d, actions_train, camerapara_train\
-                = fetch_me(self.subjects_train, self.dataset, self.keypoints_train, self.action_filter, stride)
+                = fetch_me(self.subjects_train, self.dataset, self.keypoints_train, self.action_filter, stride=1)
             
             logging.info(f"Training data: {len(poses_train)} sets, {len(poses_train_2d)} 2D sets")
             
@@ -339,30 +334,28 @@ class Diffpose(object):
                     .format(best_epoch, best_p1, epoch, p1, p2))
     
     def test_hyber(self, is_train=False):
-        """
-        The original test function with enhanced logging
-        """
         cudnn.benchmark = True
 
         args, config, src_mask = self.args, self.config, self.src_mask
         
-        # Important: Use the test parameters FROM CONFIG, not hardcoded
-        test_times = config.testing.test_times
-        test_timesteps = config.testing.test_timesteps  
-        test_num_diffusion_timesteps = config.testing.test_num_diffusion_timesteps
+        # FORCE the correct test parameters regardless of what's passed
+        test_times = 1  # Force this value 
+        test_timesteps = 2  # Force this value
+        test_num_diffusion_timesteps = 12  # Force this value
         
-        # FIXED: Get downsample from args or config correctly
-        stride = getattr(args, 'downsample', 1)  # Default to 1 if not found
-        
-        logging.info(f"Using test parameters from config: times={test_times}, steps={test_timesteps}, diffusion_timesteps={test_num_diffusion_timesteps}")
+        # ADDED: Debug logging of test parameters
+        logging.info(f"DIFFPOSE-DEBUG: Test parameters: times={test_times}, steps={test_timesteps}, timesteps={test_num_diffusion_timesteps}")
                 
         if config.data.dataset == "human36m":
             logging.info("Loading validation data...")
             poses_valid, poses_valid_2d, actions_valid, camerapara_valid = \
-                fetch_me(self.subjects_test, self.dataset, self.keypoints_test, self.action_filter, stride)
+                fetch_me(self.subjects_test, self.dataset, self.keypoints_test, self.action_filter, stride=1)
                 
             # Print validation data shape just once
             logging.info(f"Validation data: {len(poses_valid)} samples")
+            
+            # ADDED: Debug logging of validation data
+            logging.info(f"DIFFPOSE-DEBUG: Validation data shapes: poses_3d={len(poses_valid)} sets, poses_2d={len(poses_valid_2d)} sets")
             
             data_loader = valid_loader = data.DataLoader(
                 PoseGenerator_gmm(poses_valid, poses_valid_2d, actions_valid, camerapara_valid),
@@ -370,6 +363,9 @@ class Diffpose(object):
                 num_workers=config.training.num_workers, pin_memory=True)
                 
             logging.info(f"Validation data loader created with {len(data_loader)} batches")
+            
+            # ADDED: Debug logging of data loader
+            logging.info(f"DIFFPOSE-DEBUG: Data loader created with {len(data_loader)} batches of size {config.training.batch_size}")
         else:
             raise KeyError('Invalid dataset') 
 
@@ -381,7 +377,7 @@ class Diffpose(object):
         self.model_diff.eval()
         self.model_pose.eval()
         
-        # Generate diffusion sequence - using original approach
+        # Generate diffusion sequence using fixed parameters
         if args.skip_type == "uniform":
             skip = test_num_diffusion_timesteps // test_timesteps
             seq = range(0, test_num_diffusion_timesteps, skip)
@@ -393,6 +389,9 @@ class Diffpose(object):
         
         # Print diffusion sequence info once
         logging.info(f"Diffusion steps: {len(seq)}, sequence: {list(seq)}")
+        
+        # ADDED: Debug logging of diffusion sequence
+        logging.info(f"DIFFPOSE-DEBUG: Diffusion steps: {len(seq)}, sequence: {list(seq)}")
         
         epoch_loss_3d_pos = AverageMeter()
         epoch_loss_3d_pos_procrustes = AverageMeter()
@@ -406,17 +405,35 @@ class Diffpose(object):
             input_noise_scale, input_2d, targets_3d = \
                 input_noise_scale.to(self.device), input_2d.to(self.device), targets_3d.to(self.device)
 
+            # ADDED: Debug logging of input tensors
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: Input 2D stats: min={input_2d.min().item():.4f}, max={input_2d.max().item():.4f}, mean={input_2d.mean().item():.4f}")
+                logging.info(f"DIFFPOSE-DEBUG: Target 3D stats: min={targets_3d.min().item():.4f}, max={targets_3d.max().item():.4f}, mean={targets_3d.mean().item():.4f}")
+                logging.info(f"DIFFPOSE-DEBUG: Noise scale stats: min={input_noise_scale.min().item():.4f}, max={input_noise_scale.max().item():.4f}")
+
             # Build uvxyz - exactly like the original implementation
             inputs_xyz = self.model_pose(input_2d, src_mask)  
             
             # Debug the first batch
             if i == 0:
                 logging.info(f"First batch GCNpose output: shape={inputs_xyz.shape}, " +
-                           f"min={inputs_xyz.min().item():.4f}, max={inputs_xyz.max().item():.4f}, " +
-                           f"mean={inputs_xyz.mean().item():.4f}")
+                        f"min={inputs_xyz.min().item():.4f}, max={inputs_xyz.max().item():.4f}, " +
+                        f"mean={inputs_xyz.mean().item():.4f}")
+                
+                # ADDED: Additional debug logging
+                logging.info(f"DIFFPOSE-DEBUG: GCNpose output before root centering: min={inputs_xyz.min().item():.4f}, max={inputs_xyz.max().item():.4f}, mean={inputs_xyz.mean().item():.4f}")
             
             inputs_xyz[:, :, :] -= inputs_xyz[:, :1, :] 
+            
+            # ADDED: Debug logging after root centering
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: GCNpose output after root centering: min={inputs_xyz.min().item():.4f}, max={inputs_xyz.max().item():.4f}, mean={inputs_xyz.mean().item():.4f}")
+            
             input_uvxyz = torch.cat([input_2d,inputs_xyz],dim=2)
+            
+            # ADDED: Debug logging of concatenated input
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: input_uvxyz stats: min={input_uvxyz.min().item():.4f}, max={input_uvxyz.max().item():.4f}, mean={input_uvxyz.mean().item():.4f}")
                     
             # Generate distribution
             input_uvxyz = input_uvxyz.repeat(test_times,1,1)
@@ -424,14 +441,17 @@ class Diffpose(object):
             # Select diffusion step
             t = torch.ones(input_uvxyz.size(0)).type(torch.LongTensor).to(self.device)*test_num_diffusion_timesteps
             
-            # Prepare the diffusion parameters (ORIGINAL IMPLEMENTATION)
-            x = input_uvxyz.clone()  # Note the .clone() here
+            # Prepare the diffusion parameters
+            x = input_uvxyz
             e = torch.randn_like(input_uvxyz)
             b = self.betas   
             e = e*input_noise_scale        
             a = (1-b).cumprod(dim=0).index_select(0, t).view(-1, 1, 1)
-            # IMPORTANT: THIS LINE IS COMMENTED OUT IN ORIGINAL
-            # x = x * a.sqrt() + e * (1.0 - a).sqrt()
+            
+            # ADDED: Debug logging of diffusion parameters
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: Diffusion noise e stats: min={e.min().item():.4f}, max={e.max().item():.4f}, mean={e.mean().item():.4f}")
+                logging.info(f"DIFFPOSE-DEBUG: Diffusion alpha a stats: min={a.min().item():.4f}, max={a.max().item():.4f}, mean={a.mean().item():.4f}")
             
             # Use the standard diffusion process
             output_uvxyz = generalized_steps(x, src_mask, seq, self.model_diff, self.betas, eta=args.eta)
@@ -441,18 +461,49 @@ class Diffpose(object):
                 logging.info(f"generalized_steps output: type={type(output_uvxyz)}")
                 if isinstance(output_uvxyz, tuple) and len(output_uvxyz) > 0:
                     logging.info(f"  output_uvxyz[0] length: {len(output_uvxyz[0])}")
+                    
+                # ADDED: More detailed debug logging
+                if isinstance(output_uvxyz, tuple) and len(output_uvxyz) > 0 and len(output_uvxyz[0]) > 0:
+                    logging.info(f"DIFFPOSE-DEBUG: output_uvxyz[0][-1] stats: min={output_uvxyz[0][-1].min().item():.4f}, max={output_uvxyz[0][-1].max().item():.4f}, mean={output_uvxyz[0][-1].mean().item():.4f}")
             
             output_uvxyz = output_uvxyz[0][-1]
             output_uvxyz = torch.mean(output_uvxyz.reshape(test_times,-1,17,5),0)
             output_xyz = output_uvxyz[:,:,2:]
             
+            # ADDED: Debug logging of output before root centering
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: output_xyz before root centering: min={output_xyz.min().item():.4f}, max={output_xyz.max().item():.4f}, mean={output_xyz.mean().item():.4f}")
+            
             output_xyz[:, :, :] -= output_xyz[:, :1, :]
             targets_3d[:, :, :] -= targets_3d[:, :1, :]
             
-            # IMPORTANT: The original implementation does NOT have explicit scaling
+            # ADDED: Debug logging of output and target after root centering
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: output_xyz after root centering: min={output_xyz.min().item():.4f}, max={output_xyz.max().item():.4f}, mean={output_xyz.mean().item():.4f}")
+                logging.info(f"DIFFPOSE-DEBUG: targets_3d after root centering: min={targets_3d.min().item():.4f}, max={targets_3d.max().item():.4f}, mean={targets_3d.mean().item():.4f}")
+            
+            # REMOVED: Scale correction - no scale factor applied
+            # Instead calculate scale factor for debug but don't apply it
+            scale_factor = (targets_3d.abs().mean() / output_xyz.abs().mean()).detach()
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: Calculated but not applied scale factor: {scale_factor.item():.4f}")
+                
+            # Calculate metrics before scale (what we're doing now)
+            mpjpe_before_scale = mpjpe(output_xyz, targets_3d).item() * 1000.0
+            p_mpjpe_value = p_mpjpe(output_xyz.cpu().numpy(), targets_3d.cpu().numpy()).item() * 1000.0
+            
+            # ADDED: Debug logging of metrics 
+            if i == 0:
+                logging.info(f"DIFFPOSE-DEBUG: MPJPE without scaling: {mpjpe_before_scale:.4f}")
+                
+                # Also calculate with scale for comparison
+                scaled_output = output_xyz * scale_factor
+                mpjpe_with_scale = mpjpe(scaled_output, targets_3d).item() * 1000.0
+                logging.info(f"DIFFPOSE-DEBUG: MPJPE with scaling (for comparison): {mpjpe_with_scale:.4f}")
+            
             # Calculate metrics
-            current_mpjpe = mpjpe(output_xyz, targets_3d).item() * 1000.0
-            current_p_mpjpe = p_mpjpe(output_xyz.cpu().numpy(), targets_3d.cpu().numpy()).item() * 1000.0
+            current_mpjpe = mpjpe_before_scale
+            current_p_mpjpe = p_mpjpe_value
             
             if i == 0:
                 logging.info(f"First batch MPJPE: {current_mpjpe:.4f}, P-MPJPE: {current_p_mpjpe:.4f}")
@@ -479,3 +530,5 @@ class Diffpose(object):
         logging.info(f"Final MPJPE: {p1:.4f}, P-MPJPE: {p2:.4f}")
 
         return p1, p2
+        
+        

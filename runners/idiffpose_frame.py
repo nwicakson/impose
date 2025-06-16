@@ -47,7 +47,7 @@ def setup_logging():
 # Initialize logging correctly
 setup_logging()
 
-class Diffpose(object):
+class IDiffpose(object):
     def __init__(self, args, config, device=None):
         self.args = args
         self.config = config
@@ -180,6 +180,15 @@ class Diffpose(object):
         self.model_diff = GCNdiff(adj.cuda(), config).cuda()
         self.model_diff = torch.nn.DataParallel(self.model_diff)
         
+        keep_blocks = [
+            self.model_diff.module.deq_block,      # may be None if no DEQ requested
+            self.model_diff.module.gconv_output
+        ]
+
+        # ⬇️  filter out any None
+        keep_blocks = [m for m in keep_blocks if m is not None]
+        freeze_except(self.model_diff.module, keep_blocks)
+        
         # Debug: Print model parameter information
         total_params = sum(p.numel() for p in self.model_diff.parameters())
         trainable_params = sum(p.numel() for p in self.model_diff.parameters() if p.requires_grad)
@@ -302,6 +311,25 @@ class Diffpose(object):
             ema_helper = None
         
         start_epoch, step = 0, 0
+        
+        if self.args.resume is not None and os.path.isfile(self.args.resume):
+            logging.info(f"Resuming from {self.args.resume}")
+            ckpt = torch.load(self.args.resume, map_location='cpu')
+
+            # 0) network weights
+            self.model_diff.module.load_state_dict(ckpt['state_dict'], strict=True)
+
+            # 1) optimiser & scheduler
+            optimizer.load_state_dict(ckpt['optimizer'])
+            lr_scheduler.load_state_dict(ckpt['scheduler'])
+
+            # 2–3) counters
+            start_epoch  = ckpt['epoch'] + 1        # jump to the *next* epoch
+            global_step  = ckpt['step']
+
+            logging.info(f"✔  checkpoint loaded — continuing at epoch {start_epoch}")
+        else:
+            logging.info("No resume checkpoint given; training from scratch")
         
         lr_init, decay, gamma = self.config.optim.lr, self.config.optim.decay, self.config.optim.lr_gamma
         logging.info(f"Initial lr={lr_init}, decay={decay}, gamma={gamma}")

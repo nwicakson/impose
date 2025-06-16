@@ -4,6 +4,40 @@ import os
 import torch
 import torch.optim as optim
 import numpy as np
+import torch.nn as nn
+from typing import Iterable, Union
+
+def freeze_except(model, keep):
+    """
+    • Freezes the whole model (requires_grad = False)
+    • Re-enables grads for every sub-module passed in `keep`.
+
+    Example
+    -------
+    >>> freeze_except(model, keep=[model.gconv_output])                # train head only
+    >>> freeze_except(model, keep=[model.deq_block.gcn_layer])         # train GCN inside DEQ
+    """
+    
+    # normalise keep → list and drop any None
+    if not isinstance(keep, (list, tuple)):
+        keep = [keep]
+    keep = [m for m in keep if m is not None]
+
+    # 1) freeze everything
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    # 2) un-freeze the requested blocks
+    for m in keep:
+        for p in m.parameters():
+            p.requires_grad_(True)
+
+    # 3) sanity check
+    if not any(p.requires_grad for p in model.parameters()):
+        raise RuntimeError(
+            "freeze_except(): 0 parameters left trainable – "
+            "loss will be detached and backward() will fail."
+        )
 
 
 class AverageMeter(object):

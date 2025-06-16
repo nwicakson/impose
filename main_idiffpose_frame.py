@@ -50,6 +50,8 @@ def parse_args_and_config():
                         help='the path of pretrain model')
     parser.add_argument('--train', action = 'store_true',
                         help='train or evluate')
+    parser.add_argument('--resume', type=str, default=None,
+                    help='path to ckpt_XXXX.pth (or ckpt.pth) to resume training')
     #training hyperparameter
     parser.add_argument('--batch_size', default=64, type=int, metavar='N',
                         help='batch size in terms of predicted frames')

@@ -51,7 +51,8 @@ optim:
 deq:
     # General DEQ settings
     enabled: true
-    default_iterations: 1
+    layers: [0, 1, 2, 3, 4]              # 0-based indices < num_layer
+    default_iterations: 10
     best_epoch_iterations: 50   #standard = 15
     warm_up_epochs: 20
     min_epoch_for_increase: 10
@@ -60,7 +61,7 @@ deq:
     
     # Logging and tracking settings
     log_frequency: 100
-    track_residuals: false
+    track_residuals: true
     save_residual_plots: false
     
     # Component selection for DEQ application

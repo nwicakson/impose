@@ -1,177 +1,153 @@
-from __future__ import absolute_import
-from lib2to3.refactor import get_fixers_from_package
+################################################################################
+#  igcndiff.py – DiffPose backbone with user‑specified DEQ layer indices      #
+#                                                                              #
+#  YAML snippet (examples)                                                     #
+#  -------------------------------------------------------------------------  #
+#  deq:
+#    enabled: true                # master switch
+#    layers: [2, 4]               # 0‑based indices to wrap with DEQ
+#    default_iterations: 10
+#    tolerance: 1e-4
+#                                                                              #
+#  • If `layers` is empty or missing, network stays explicit.                  #
+#  • Indices outside 0…num_layer‑1 are ignored with a warning.                 #
+################################################################################
 
-import torch.nn as nn
+from __future__ import absolute_import, division, print_function
+import math, logging
+from typing import List, Optional
+
 import torch
-import numpy as np
-import scipy.sparse as sp
-import copy, math
+import torch.nn as nn
 import torch.nn.functional as F
-import logging
-from torch.nn.parameter import Parameter
-from models.ChebConv import ChebConv, _GraphConv, _ResChebGC
-from models.GraFormer import *
+
+from models.ChebConv import ChebConv, _GraphConv
+from models.GraFormer import MultiHeadedAttention, GraAttenLayer, GraphNet
 from models.deq_wrapper import DEQAttentionBlock, DEQManager
+from common.graph_utils import adj_mx_from_edges
 
-### the embedding of diffusion timestep ###
-def get_timestep_embedding(timesteps, embedding_dim):
-    """
-    This matches the implementation in Denoising Diffusion Probabilistic Models:
-    From Fairseq.
-    Build sinusoidal embeddings.
-    This matches the implementation in tensor2tensor, but differs slightly
-    from the description in Section 3.5 of "Attention Is All You Need".
-    """
-    assert len(timesteps.shape) == 1
+__all__ = ["GCNdiff", "adj_mx_from_edges"]
 
-    half_dim = embedding_dim // 2
-    emb = math.log(10000) / (half_dim - 1)
-    emb = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
-    emb = emb.to(device=timesteps.device)
-    emb = timesteps.float()[:, None] * emb[None, :]
+# --------------------------------------------------------------------------- #
+#  Utility functions                                                           #
+# --------------------------------------------------------------------------- #
+
+def timestep_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
+    half = dim // 2
+    freqs = torch.exp(-math.log(10000.0) * torch.arange(half, device=t.device) / (half - 1))
+    emb = t.float()[:, None] * freqs[None, :]
     emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
-    if embedding_dim % 2 == 1:  # zero pad
-        emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
-    return emb
+    return F.pad(emb, (0, dim % 2, 0, 0))
 
-def nonlinearity(x):
-    # swish
-    return x*torch.sigmoid(x)
-    
+def swish(x):
+    return x * torch.sigmoid(x)
+
 class _ResChebGC_diff(nn.Module):
-    def __init__(self, adj, input_dim, output_dim, emd_dim, hid_dim, p_dropout):
-        super(_ResChebGC_diff, self).__init__()
+    def __init__(self, adj, in_dim, hid_dim, emd_dim):
+        super().__init__()
         self.adj = adj
-        self.gconv1 = _GraphConv(input_dim, hid_dim, p_dropout)
-        self.gconv2 = _GraphConv(hid_dim, output_dim, p_dropout)
-        ### time embedding ###
-        self.temb_proj = torch.nn.Linear(emd_dim,hid_dim)
+        self.g1 = _GraphConv(in_dim, hid_dim, 0.1)
+        self.g2 = _GraphConv(hid_dim, hid_dim, 0.1)
+        self.temb_proj = nn.Linear(emd_dim, hid_dim)
 
     def forward(self, x, temb):
-        residual = x
-        out = self.gconv1(x, self.adj)
-        out = out + self.temb_proj(nonlinearity(temb))[:, None, :]
-        out = self.gconv2(out, self.adj)
-        return residual + out
+        res = x
+        x = self.g1(x, self.adj)
+        x = x + self.temb_proj(swish(temb))[:, None, :]
+        x = self.g2(x, self.adj)
+        return res + x
+
+# --------------------------------------------------------------------------- #
 
 class GCNdiff(nn.Module):
-    def __init__(self, adj, config):
-        super(GCNdiff, self).__init__()
-        
+    """DiffPose backbone where any subset of layers can be wrapped by DEQ."""
+
+    def __init__(self, adj, cfg):
+        super().__init__()
+        m = cfg.model
+        self.L = m.num_layer
+        self.hid = m.hid_dim
+        self.coords_dim = m.coords_dim
+        self.n_head = m.n_head
+        self.n_pts = m.n_pts
+        self.emd_dim = self.hid * 4
         self.adj = adj
-        self.config = config
-        ### load gcn configuration ###
-        con_gcn = config.model
-        self.hid_dim, self.emd_dim, self.coords_dim, num_layers, n_head, dropout, n_pts = \
-            con_gcn.hid_dim, con_gcn.emd_dim, con_gcn.coords_dim, \
-                con_gcn.num_layer, con_gcn.n_head, con_gcn.dropout, con_gcn.n_pts
-                
-        self.hid_dim = self.hid_dim
-        self.emd_dim = self.hid_dim*4
-        
-        logging.info(f"Using Implicit GCNdiff")
-        
-        # Print model configuration (just once during initialization)
-        logging.info(f"IGCNdiff Configuration: dims={self.hid_dim}/{self.emd_dim}, layers={num_layers}, heads={n_head}")
-                
-        ### Generate Graphformer  ###
-        self.n_layers = num_layers
+        logging.info(f"GCNdiff | L={self.L} | hid={self.hid} | heads={self.n_head}")
 
-        _gconv_input = ChebConv(in_c=self.coords_dim[0], out_c=self.hid_dim, K=2)
-        _gconv_layers = []
-        _attention_layer = []
+        # stem
+        self.gconv_input = ChebConv(self.coords_dim[0], self.hid, K=2)
 
-        dim_model = self.hid_dim
-        c = copy.deepcopy
-        attn = MultiHeadedAttention(n_head, dim_model)
-        gcn = GraphNet(in_features=dim_model, out_features=dim_model, n_pts=n_pts)
+        # backbone lists
+        self.atten_layers = nn.ModuleList()
+        self.gconv_layers = nn.ModuleList()
+        for _ in range(self.L):
+            self.atten_layers.append(GraAttenLayer(
+                self.hid,
+                MultiHeadedAttention(self.n_head, self.hid),
+                GraphNet(self.hid, self.hid, self.n_pts),
+                m.dropout))
+            self.gconv_layers.append(_ResChebGC_diff(adj, self.hid, self.hid, self.emd_dim))
 
-        # Create DEQ Manager to track and manage implicit iterations
-        self.deq_manager = DEQManager(config)
-        
-        # Create standard and DEQ layers
-        for i in range(num_layers):
-            _attention_layer.append(GraAttenLayer(dim_model, c(attn), c(gcn), dropout))
-            
-            _gconv_layers.append(_ResChebGC_diff(adj=adj, input_dim=self.hid_dim, output_dim=self.hid_dim,
-                emd_dim=self.emd_dim, hid_dim=self.hid_dim, p_dropout=0.1))
-        
-        # Apply DEQ to selected components based on config - default to disabled
-        self.use_middle_layer_deq = False
-        if hasattr(config, 'deq'):
-            self.use_middle_layer_deq = getattr(config.deq, 'enabled', False)
-            if hasattr(config.deq, 'components'):
-                self.use_middle_layer_deq = self.use_middle_layer_deq and getattr(config.deq.components, 'middle_layer', False)
-        
-        # Log DEQ settings
-        logging.info(f"IGCNdiff DEQ Settings: enabled={self.use_middle_layer_deq}")
-        
-        mid_idx = num_layers // 2
-        
-        # Create DEQ block for middle layer if enabled
-        if self.use_middle_layer_deq:
-            self.deq_block = DEQAttentionBlock(
-                _attention_layer[mid_idx], 
-                _gconv_layers[mid_idx],
-                name=f"mid_layer_{mid_idx}",
-                config=config
-            )
-            # Register with the manager
-            self.deq_manager.register(self.deq_block)
-        
-        # Store standard layers
-        self.gconv_input = _gconv_input
-        self.gconv_layers = nn.ModuleList(_gconv_layers)
-        self.atten_layers = nn.ModuleList(_attention_layer)
-        self.gconv_output = ChebConv(in_c=dim_model, out_c=self.coords_dim[1], K=2)
-        
-        ### diffusion configuration  ###
-        self.temb = nn.Module()
-        self.temb.dense = nn.ModuleList([
-            torch.nn.Linear(self.hid_dim, self.emd_dim),
-            torch.nn.Linear(self.emd_dim, self.emd_dim),
-        ])
+        self.gconv_output = ChebConv(self.hid, self.coords_dim[1], K=2)
 
-    def forward(self, x, mask, t, cemd):
-        # timestep embedding
-        temb = get_timestep_embedding(t, self.hid_dim)
-        temb = self.temb.dense[0](temb)
-        temb = nonlinearity(temb)
-        temb = self.temb.dense[1](temb)
-        
-        # Initial processing
+        # timestep embedding mlp
+        self.temb_mlp = nn.Sequential(
+            nn.Linear(self.hid, self.emd_dim), nn.SiLU(), nn.Linear(self.emd_dim, self.emd_dim)
+        )
+
+        # --- DEQ setup ---
+        self.deq_mgr = DEQManager(cfg)
+        self.deq_blocks: List[Optional[DEQAttentionBlock]] = [None] * self.L
+        self._create_deq_blocks(cfg)
+        # Legacy runner compatibility: expose .deq_block
+        self.deq_block: Optional[DEQAttentionBlock] = None
+
+    # --------------------------------------------------------------------- #
+    def _create_deq_blocks(self, cfg):
+        if not (hasattr(cfg, "deq") and cfg.deq.enabled):
+            logging.info("DEQ disabled")
+            return
+        idxs = list(getattr(cfg.deq, "layers", []))
+        valid = [i for i in idxs if 0 <= i < self.L]
+        if len(valid) < len(idxs):
+            logging.warning(f"DEQ: some indices ignored (out of range 0..{self.L-1})")
+        if not valid:
+            logging.warning("DEQ enabled but no valid layers provided; fallback to explicit model")
+            return
+        for i in valid:
+            blk = DEQAttentionBlock(self.atten_layers[i], self.gconv_layers[i], f"deq_{i}", cfg)
+            self.deq_blocks[i] = blk
+            self.deq_mgr.register(blk)
+        logging.info(f"DEQ wrapping layers {valid}")
+        # -------------------------------------------------------------
+        # Provide the first DEQ block via legacy attribute .deq_block
+        # so older runner code (create_diffusion_model) doesn’t break.
+        # If multiple DEQs requested, pick the first index in 'valid'.
+        # -------------------------------------------------------------
+        self.deq_block = self.deq_blocks[valid[0]]
+        idxs = list(getattr(cfg.deq, "layers", []))
+        valid = [i for i in idxs if 0 <= i < self.L]
+        if len(valid) < len(idxs):
+            logging.warning(f"DEQ: some indices ignored (out of range 0..{self.L-1})")
+        if not valid:
+            logging.warning("DEQ enabled but no valid layers provided; fallback to explicit model")
+            return
+        for i in valid:
+            blk = DEQAttentionBlock(self.atten_layers[i], self.gconv_layers[i], f"deq_{i}", cfg)
+            self.deq_blocks[i] = blk
+            self.deq_mgr.register(blk)
+        logging.info(f"DEQ wrapping layers {valid}")
+
+    # --------------------------------------------------------------------- #
+    def forward(self, x, mask, t, *_):
+        temb = self.temb_mlp(timestep_embedding(t, self.hid))
         out = self.gconv_input(x, self.adj)
-        
-        # First half of the network - standard processing
-        for i in range(self.n_layers // 2):
-            out = self.atten_layers[i](out, mask)
-            out = self.gconv_layers[i](out, temb)
-        
-        # Middle layer with DEQ if enabled, otherwise standard processing
-        mid_idx = self.n_layers // 2
-        
-        if self.use_middle_layer_deq and hasattr(self, 'deq_block'):
-            try:
-                # Apply DEQ to middle layer
-                mid_out, iterations = self.deq_block(out, mask, temb)
-                self.deq_manager.update_stats(iterations)
-                out = mid_out
-            except Exception as e:
-                # If DEQ fails, fall back to standard processing
-                logging.warning(f"DEQ failed: {e}, using standard forward pass")
-                out = self.atten_layers[mid_idx](out, mask)
-                out = self.gconv_layers[mid_idx](out, temb)
-        else:
-            # Standard processing when DEQ is disabled (original behavior)
-            out = self.atten_layers[mid_idx](out, mask)
-            out = self.gconv_layers[mid_idx](out, temb)
-        
-        # Second half of the network - standard processing
-        for i in range(self.n_layers // 2 + 1, self.n_layers):
-            out = self.atten_layers[i](out, mask)
-            out = self.gconv_layers[i](out, temb)
-        
-        # Final output layer
-        out = self.gconv_output(out, self.adj)
-        
-        return out
+        for i in range(self.L):
+            blk = self.deq_blocks[i]
+            if blk is not None:
+                out, its = blk(out, mask, temb)
+                self.deq_mgr.update_stats(its)
+            else:
+                out = self.atten_layers[i](out, mask)
+                out = self.gconv_layers[i](out, temb)
+        return self.gconv_output(out, self.adj)
